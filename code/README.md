@@ -66,27 +66,27 @@ code/
 ├── main.py              # Entry point — orchestrates the full pipeline
 ├── loader.py            # CSV loading + claim enrichment
 ├── image_utils.py       # PIL image loading, base64 encoding
-├── risk.py              # Pure-logic risk flag assessment from user history
-├── validator.py         # Validates & fixes VLM output to allowed values
+├── risk.py              # Pure-logic risk assessment + prompt injection detection
+├── validator.py         # Validates VLM output & applies consistency rules
 ├── vlm.py               # Groq vision model integration (primary + fallback)
 └── evaluation/
-    └── main.py          # Strategy A vs B evaluation on sample claims
+    └── main.py          # Strategy eval, confusion matrix & error analysis
 ```
 
 ### Pipeline flow (per claim)
 
 1. Load images → base64 via Pillow
-2. Assess risk flags from user history (no LLM)
-3. Send images + claim text to Groq VLaMA Vision
-4. Merge risk flags, validate all output values
-5. Write row to `output.csv`
+2. Assess risk flags from user history + prompt injection detection (no LLM)
+3. Send images + claim text to Groq LLaMA Vision
+4. Merge risk flags, validate values & apply auto-correction consistency rules
+5. Write row to `output.csv` (fallback row generated on failure to guarantee 1:1 mapping)
 
 ### Models used
 
 | Model | Role |
 |-------|------|
-| `llama-3.2-90b-vision-preview` | Primary (up to 3 retries) |
-| `llama-3.2-11b-vision-preview` | Fallback (1 attempt) |
+| `meta-llama/llama-4-scout-17b-16e-instruct` | Primary (up to 3 retries) |
+| `qwen/qwen3.6-27b` | Fallback (1 attempt) |
 
 ---
 
@@ -107,7 +107,7 @@ valid_image, severity
 ## Rate limiting & concurrency
 
 - `time.sleep(0.5)` between every API call
-- `ThreadPoolExecutor(max_workers=3)` for concurrency
+- `ThreadPoolExecutor(max_workers=1)` for sequential processing to avoid simultaneous rate limit exhaustion
 - Groq free tier — no cost incurred
 
 ---

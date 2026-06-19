@@ -347,19 +347,19 @@ which is the primary evaluation signal. Sending {"all images provides richer vis
 | Strategy A runtime | {elapsed_a:.1f}s |
 | Strategy B runtime | {elapsed_b:.1f}s |
 | Combined runtime | {elapsed_a + elapsed_b:.1f}s |
-| Estimated cost | **Free** (llama-3.2-90b-vision-preview on Groq free tier) |
+| Estimated cost | **Free** (meta-llama/llama-4-scout-17b-16e-instruct on Groq free tier) |
 
 ### Rate Limit Handling
 
 - **Inter-call delay:** 0.5 seconds between every API call (`time.sleep(0.5)` in `vlm.py`)
 - **Max workers:** 3 concurrent threads (`ThreadPoolExecutor(max_workers=3)`)
 - **Retry policy:** Up to 3 retries on primary model, 1 attempt on fallback model
-- **Fallback model:** `llama-3.2-11b-vision-preview` used if primary fails all retries
+- **Fallback model:** `qwen/qwen3.6-27b` used if primary fails all retries
 
 ### Model Information
 
-- **Primary:** `llama-3.2-90b-vision-preview` (Groq, free tier)
-- **Fallback:** `llama-3.2-11b-vision-preview` (Groq, free tier)
+- **Primary:** `meta-llama/llama-4-scout-17b-16e-instruct` (Groq, free tier)
+- **Fallback:** `qwen/qwen3.6-27b` (Groq, free tier)
 - **Provider:** [Groq](https://console.groq.com) — no cost on free tier
 """
 
