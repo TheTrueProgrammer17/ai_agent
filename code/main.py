@@ -328,6 +328,12 @@ def main():
     console.print("\n")
     console.print(Panel(summary, title="[bold]Pipeline Summary[/bold]", border_style="bright_green", padding=(1, 4)))
 
+    console.print("\n[bold cyan]Consistency Corrections Applied:[/bold cyan]")
+    from validator import CORRECTION_COUNTS
+    for k, v in CORRECTION_COUNTS.items():
+        if v > 0:
+            console.print(f"  {k}: {v}")
+
     # Warn if fallbacks occurred due to rate limits
     if fallbacks > 0:
         console.print(

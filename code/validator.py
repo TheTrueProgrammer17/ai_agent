@@ -37,6 +37,14 @@ OBJECT_PARTS = {
     },
 }
 
+CORRECTION_COUNTS = {
+    "wrong_object_corrected": 0,
+    "issue_type_corrected": 0,
+    "injection_corrected": 0,
+    "severity_corrected": 0,
+    "evidence_corrected": 0,
+}
+
 
 def _to_bool_str(value) -> str:
     """Normalise any value to lowercase 'true' or 'false' string."""
@@ -130,5 +138,77 @@ def validate_and_fix(result: dict, claim_object: str) -> dict:
 
     # --- valid_image ---
     fixed["valid_image"] = _to_bool_str(fixed.get("valid_image"))
+
+    # --- POST-PROCESSING CONSISTENCY RULES ---
+    risk_flags_list = [
+        f.strip() 
+        for f in fixed.get("risk_flags", "none").split(";") 
+        if f.strip() and f.strip() != "none"
+    ]
+
+    # Rule 1: wrong_object -> contradicted
+    if (
+        "wrong_object" in risk_flags_list
+        and fixed.get("claim_status") == "not_enough_information"
+    ):
+        fixed["claim_status"] = "contradicted"
+        fixed["claim_status_justification"] = (
+            fixed.get("claim_status_justification", "") +
+            " [AUTO-CORRECTED: wrong object detected, claim contradicted.]"
+        )
+        CORRECTION_COUNTS["wrong_object_corrected"] += 1
+
+    # Rule 2: known issue_type + NEI -> supported
+    if (
+        fixed.get("claim_status") == "not_enough_information"
+        and fixed.get("issue_type") not in ["unknown", "none"]
+        and "damage_not_visible" not in risk_flags_list
+        and "wrong_object" not in risk_flags_list
+        and "wrong_object_part" not in risk_flags_list
+    ):
+        fixed["claim_status"] = "supported"
+        fixed["claim_status_justification"] = (
+            fixed.get("claim_status_justification", "") +
+            " [AUTO-CORRECTED: damage type identified, status upgraded to supported.]"
+        )
+        # Also fix severity if it is unknown
+        if fixed.get("severity") == "unknown":
+            fixed["severity"] = "low"
+        CORRECTION_COUNTS["issue_type_corrected"] += 1
+
+    # Rule 3: text_instruction_present + NEI -> contradicted
+    if (
+        "text_instruction_present" in risk_flags_list
+        and fixed.get("claim_status") == "not_enough_information"
+    ):
+        fixed["claim_status"] = "contradicted"
+        fixed["claim_status_justification"] = (
+            fixed.get("claim_status_justification", "") +
+            " [AUTO-CORRECTED: instruction injection detected.]"
+        )
+        CORRECTION_COUNTS["injection_corrected"] += 1
+
+    # Rule 4: severity unknown + supported/contradicted -> fix
+    if (
+        fixed.get("claim_status") in ["supported", "contradicted"]
+        and fixed.get("severity") == "unknown"
+    ):
+        if fixed.get("claim_status") == "contradicted":
+            fixed["severity"] = "none"
+        else:
+            fixed["severity"] = "low"
+        CORRECTION_COUNTS["severity_corrected"] += 1
+
+    # Rule 5: evidence_standard_met + valid_image + NEI fix
+    if (
+        fixed.get("claim_status") == "not_enough_information"
+        and fixed.get("evidence_standard_met") == "true"
+        and fixed.get("valid_image") == "true"
+        and fixed.get("issue_type") not in ["unknown", "none"]
+    ):
+        fixed["claim_status"] = "supported"
+        if fixed.get("severity") == "unknown":
+            fixed["severity"] = "low"
+        CORRECTION_COUNTS["evidence_corrected"] += 1
 
     return fixed
