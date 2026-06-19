@@ -1,0 +1,16 @@
+# Ignore python cache files everywhere
+**/__pycache__/
+*.pyc
+
+# Ignore local virtual environments
+.venv/
+
+# Ignore private API keys if stored in text
+.env
+
+# Ignore run outputs and evaluation tables
+*.csv
+*.md
+!README.md
+CLAUDE.md
+AGENTS.md
