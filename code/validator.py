@@ -66,6 +66,20 @@ def validate_and_fix(result: dict, claim_object: str) -> dict:
 
     # --- issue_type ---
     it = str(fixed.get("issue_type", "")).strip().lower()
+    
+    # Normalization mapping
+    norm_map = {
+        "fracture": "crack",
+        "split": "crack",
+        "broken hinge": "broken_part",
+        "detached": "broken_part",
+        "tear": "torn_packaging",
+        "wet": "water_damage",
+        "water stained": "water_damage",
+    }
+    if it in norm_map:
+        it = norm_map[it]
+        
     if it not in ALLOWED_ISSUE_TYPE:
         fixed["issue_type"] = "unknown"
     else:

@@ -86,9 +86,21 @@ def run_single_claim(claim: dict, image_mode: str = "all") -> dict:
             existing = [f.strip() for f in existing.split(";") if f.strip() and f.strip() != "none"]
         vlm_result["risk_flags"] = list(dict.fromkeys(existing + extra_risk_flags))
 
+        # --- Post-processing risk flag rules ---
+        rf_list = vlm_result["risk_flags"]
+        rf_set = {str(f).strip().lower() for f in rf_list}
+        
+        if "wrong_object" in rf_set:
+            vlm_result["claim_status"] = "contradicted"
+            
+        if "damage_not_visible" in rf_set and ("wrong_angle" in rf_set or "cropped_or_obstructed" in rf_set):
+            vlm_result["claim_status"] = "not_enough_information"
+        # ---------------------------------------
+
         fixed = validate_and_fix(vlm_result, claim_object)
         return {
             "user_id": user_id,
+            "claim_object": claim_object,
             "claim_status": fixed.get("claim_status", "not_enough_information"),
             "issue_type": fixed.get("issue_type", "unknown"),
             "severity": fixed.get("severity", "unknown"),
@@ -102,6 +114,7 @@ def run_single_claim(claim: dict, image_mode: str = "all") -> dict:
         console.print(f"[red][eval] Error on claim {user_id}: {e}[/red]")
         return {
             "user_id": user_id,
+            "claim_object": claim_object,
             **SAFE_DEFAULTS,
         }
 
@@ -159,6 +172,48 @@ def compute_metrics(predictions: list, ground_truth: list) -> dict:
     return result
 
 
+def analyze_errors(predictions: list, ground_truth: list):
+    cm = {
+        "supported": {"supported": 0, "contradicted": 0, "not_enough_information": 0},
+        "contradicted": {"supported": 0, "contradicted": 0, "not_enough_information": 0},
+        "not_enough_information": {"supported": 0, "contradicted": 0, "not_enough_information": 0},
+    }
+    wrong_preds = []
+    error_counts = {
+        "claim_status": 0,
+        "issue_type": 0,
+        "severity": 0,
+        "evidence_standard_met": 0
+    }
+    
+    for p, gt in zip(predictions, ground_truth):
+        user_id = p.get("user_id")
+        claim_object = p.get("claim_object", "")
+        
+        expected_cs = gt.get("claim_status", "")
+        pred_cs = p.get("claim_status", "")
+        
+        if expected_cs in cm and pred_cs in cm[expected_cs]:
+            cm[expected_cs][pred_cs] += 1
+            
+        is_wrong = False
+        row_wrong = {"user_id": user_id, "claim_object": claim_object}
+        
+        for field in EXPECTED_COLUMNS:
+            e_val = str(gt.get(field, "")).strip().lower()
+            p_val = str(p.get(field, "")).strip().lower()
+            row_wrong[f"expected_{field}"] = e_val
+            row_wrong[f"predicted_{field}"] = p_val
+            if e_val and e_val != p_val:
+                is_wrong = True
+                error_counts[field] += 1
+                
+        if is_wrong:
+            wrong_preds.append(row_wrong)
+            
+    return cm, wrong_preds, error_counts
+
+
 def print_metrics_table(title: str, metrics: dict):
     table = Table(title=title, show_header=True, header_style="bold bright_blue", border_style="dim")
     table.add_column("Metric", style="bold")
@@ -212,6 +267,8 @@ def write_report(
     elapsed_a: float,
     elapsed_b: float,
     api_calls_total: int,
+    cm: dict,
+    error_counts: dict,
 ):
     report_path = os.path.join(EVAL_DIR, "evaluation_report.md")
 
@@ -231,6 +288,21 @@ def write_report(
             lines.append(f"| {field} | {a:.1f}% | {b:.1f}% | {winner} |")
         return "\n".join(lines)
 
+    def fmt_cm(cm_dict: dict) -> str:
+        lines = [
+            "| Expected \\ Predicted | supported | contradicted | not_enough_information |",
+            "|----------------------|-----------|--------------|------------------------|"
+        ]
+        for exp in ["supported", "contradicted", "not_enough_information"]:
+            lines.append(f"| **{exp}** | {cm_dict[exp]['supported']} | {cm_dict[exp]['contradicted']} | {cm_dict[exp]['not_enough_information']} |")
+        return "\n".join(lines)
+
+    def fmt_errors(ec: dict) -> str:
+        lines = []
+        for k, v in sorted(ec.items(), key=lambda x: x[1], reverse=True):
+            lines.append(f"- wrong {k}: {v}")
+        return "\n".join(lines)
+
     report = f"""# Evaluation Report — Damage Claim Verification System
 
 Generated: {time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -240,6 +312,14 @@ Generated: {time.strftime("%Y-%m-%dT%H:%M:%S")}
 ### Metrics for Strategy {chosen}
 
 {fmt_table(chosen_metrics)}
+
+### Error Analysis (Chosen Strategy)
+
+#### Confusion Matrix (claim_status)
+{fmt_cm(cm)}
+
+#### Top Error Categories
+{fmt_errors(error_counts)}
 
 ---
 
@@ -360,6 +440,35 @@ def main():
     import vlm as vlm_module
     api_calls_total = vlm_module._total_api_calls
 
+    # Error analysis on chosen strategy
+    chosen_preds = preds_b if chosen == "B" else preds_a
+    cm, wrong_preds, error_counts = analyze_errors(chosen_preds, ground_truth)
+
+    # Print error analysis
+    console.print("\n[bold magenta]=== Error Analysis ===[/bold magenta]")
+    console.print("[bold]Confusion Matrix (claim_status)[/bold]")
+    console.print("Expected -> Predicted\n")
+    for expected in ["supported", "contradicted", "not_enough_information"]:
+        for predicted in ["supported", "contradicted", "not_enough_information"]:
+            console.print(f"{expected} -> {predicted}: {cm[expected][predicted]}")
+        console.print()
+            
+    console.print("[bold]Top error categories[/bold]")
+    for k, v in sorted(error_counts.items(), key=lambda x: x[1], reverse=True):
+        console.print(f"- wrong {k}: {v}")
+    console.print()
+
+    # Save wrong predictions
+    wp_path = os.path.join(EVAL_DIR, "wrong_predictions.csv")
+    with open(wp_path, "w", newline="", encoding="utf-8") as f:
+        fieldnames = ["user_id", "claim_object"] + \
+            [f"expected_{c}" for c in EXPECTED_COLUMNS] + \
+            [f"predicted_{c}" for c in EXPECTED_COLUMNS]
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(wrong_preds)
+    console.print(f"[bold green]✓ Wrong predictions CSV written to:[/bold green] {wp_path}")
+
     # Write report
     write_report(
         metrics_a=metrics_a,
@@ -371,6 +480,8 @@ def main():
         elapsed_a=elapsed_a,
         elapsed_b=elapsed_b,
         api_calls_total=api_calls_total,
+        cm=cm,
+        error_counts=error_counts,
     )
 
     console.print(

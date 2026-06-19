@@ -31,6 +31,18 @@ RULES:
 4. If image quality is poor, flag it in risk_flags.
 5. supporting_image_ids must only contain IDs of images
    that directly show the claimed damage.
+
+CRITICAL DEFINITIONS:
+- supported: Images CLEARLY show the exact damage described.
+- contradicted: Images show the object clearly BUT the 
+  claimed damage is NOT visible, OR a completely different
+  type of damage is shown instead.
+- not_enough_information: Cannot evaluate because image
+  quality, angle, or visibility prevents analysis.
+
+IMPORTANT: If you can clearly see the claimed object part
+but the claimed damage does not exist there, use 
+contradicted — not not_enough_information.
 """
 
 FALLBACK_RESULT = {
@@ -84,6 +96,22 @@ def _build_user_message(
 
     risk_text = ", ".join(extra_risk_flags) if extra_risk_flags else "none"
 
+    # Handle multi-part claims
+    multi_part_text = ""
+    claim_lower = claim_text.lower()
+    multi_indicators = ["both", "two", "first", "second", "and the"]
+    if any(ind in claim_lower for ind in multi_indicators):
+        multi_part_text = """
+MULTI-PART CLAIM DETECTED:
+The user is claiming damage to multiple parts.
+Review all claimed parts.
+For claim_status: if ANY claimed part is supported
+by images, use "supported".
+For object_part: use the primary/most damaged part.
+For supporting_image_ids: list all images that show
+any of the claimed damage.
+"""
+
     return f"""## Claim Information
 Object type: {claim_object}
 User claim: {claim_text}
@@ -96,7 +124,7 @@ User claim: {claim_text}
 
 ## Additional Risk Context
 {risk_text}
-
+{multi_part_text}
 ## Your Task
 Analyze the images against the claim.
 Return ONLY this JSON with these exact keys:

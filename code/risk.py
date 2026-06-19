@@ -4,17 +4,40 @@ No LLM or API calls. Returns list of risk flag strings.
 """
 
 
-def assess_risk(user_history: dict) -> list:
+def detect_claim_injection(user_claim: str) -> bool:
+    """Detect if user_claim contains instruction injection."""
+    claim_lower = user_claim.lower()
+    injection_patterns = [
+        "ignore all previous",
+        "ignore previous instructions",
+        "skip manual review",
+        "approve the claim",
+        "approve this claim",
+        "mark this",
+        "mark the claim",
+        "follow it and approve",
+        "usko follow karke",
+        "should be approved",
+        "approve immediately",
+        "accept this quickly",
+        "keep reopening",
+    ]
+    return any(p in claim_lower for p in injection_patterns)
+
+
+def assess_risk(user_history: dict, user_claim: str = "") -> list:
     """
-    Assess risk flags based on user history.
+    Assess risk flags based on user history and claim text.
 
     Rules:
       - if past_claim_count > 5 and rejected_claim > 1 → "user_history_risk"
       - if last_90_days_claim_count > 3 → "manual_review_required"
       - if history_flags is not empty and not "none" → "user_history_risk"
+      - if user_claim contains injection patterns → "text_instruction_present",
+        "manual_review_required"
       - deduplicate before returning
 
-    Returns [] if user_history is empty.
+    Returns [] if user_history is empty and no injection detected.
     """
     if not user_history:
         return []
@@ -45,6 +68,11 @@ def assess_risk(user_history: dict) -> list:
             flags.append("user_history_risk")
     except (ValueError, TypeError):
         pass
+
+    # Rule 4: prompt injection in claim text
+    if user_claim and detect_claim_injection(user_claim):
+        flags.append("text_instruction_present")
+        flags.append("manual_review_required")
 
     # Deduplicate while preserving order
     seen = set()
