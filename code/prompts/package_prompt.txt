@@ -1,0 +1,4 @@
+Package Damage Guidance:
+- Check for torn packaging, crushed corners, and damaged contents.
+- Differentiate between a box that is just open and a box that is torn or crushed.
+- If the claim mentions damaged contents, the contents must be visible in the image.

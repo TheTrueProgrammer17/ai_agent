@@ -109,11 +109,31 @@ def process_claim(claim: dict, idx: int) -> dict:
         # Load images
         images = load_all_images(image_paths_str, base_dir=DATASET_DIR)
 
-        # Assess risk from user history
-        extra_risk_flags = assess_risk(user_history)
+        # Assess risk from user history and claim text
+        extra_risk_flags = assess_risk(user_history, user_claim=claim_text)
 
         # Only send valid images to VLM
         valid_images = [img for img in images if img["valid"]]
+
+        # Extract image quality flags
+        quality_flags = []
+        for img in valid_images:
+            quality_flags.extend(img.get("flags", []))
+        extra_risk_flags.extend(quality_flags)
+
+        # Check evidence requirements deterministically
+        evidence_met_pre_vlm = None
+        evidence_reason_pre_vlm = None
+        if evidence_requirements:
+            for req in evidence_requirements:
+                if "minimum_images" in req:
+                    try:
+                        min_imgs = int(req["minimum_images"])
+                        if len(valid_images) < min_imgs:
+                            evidence_met_pre_vlm = "false"
+                            evidence_reason_pre_vlm = f"Requires at least {min_imgs} images, only provided {len(valid_images)} valid image(s)."
+                    except ValueError:
+                        pass
 
         # Analyze with VLM
         vlm_result = analyze_claim(
@@ -123,6 +143,12 @@ def process_claim(claim: dict, idx: int) -> dict:
             evidence_requirements=evidence_requirements,
             extra_risk_flags=extra_risk_flags,
         )
+
+        # Override if deterministic rule failed
+        if evidence_met_pre_vlm == "false":
+            vlm_result["evidence_standard_met"] = "false"
+            if "evidence_standard_met_reason" not in vlm_result or not vlm_result["evidence_standard_met_reason"]:
+                vlm_result["evidence_standard_met_reason"] = evidence_reason_pre_vlm
 
         # Merge extra_risk_flags into result risk_flags
         existing_flags = vlm_result.get("risk_flags", [])

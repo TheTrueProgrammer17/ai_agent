@@ -59,6 +59,10 @@ Outputs: `code/evaluation/evaluation_report.md`
 
 ---
 
+## Architecture Diagram
+
+`Loader` → `Risk Engine` → `Image Processing` → `Cache` → `VLM` → `Validator` → `Output`
+
 ## Architecture
 
 ```
@@ -75,11 +79,20 @@ code/
 
 ### Pipeline flow (per claim)
 
-1. Load images → base64 via Pillow
-2. Assess risk flags from user history + prompt injection detection (no LLM)
-3. Send images + claim text to Groq LLaMA Vision
-4. Merge risk flags, validate values & apply auto-correction consistency rules
-5. Write row to `output.csv` (fallback row generated on failure to guarantee 1:1 mapping)
+1. **Loader**: Load claims and enrich with user history and evidence requirements.
+2. **Risk Engine**: Assess risk flags from user history + prompt injection detection (no LLM).
+3. **Image Processing**: Extract images via Pillow and perform lightweight image quality checks (blur, lighting).
+4. **Cache**: Check file-based JSON cache to skip redundant VLM calls.
+5. **VLM**: Send images, claim text, and object-specific prompts to Groq LLaMA Vision.
+6. **Validator**: Validate values, apply auto-correction consistency rules, and compute confidence score.
+7. **Output**: Write row to `output.csv` (fallback row generated on failure to guarantee 1:1 mapping).
+
+### Key Design Decisions
+
+- **Why images are primary evidence**: Text claims can be easily manipulated or hallucinated. Visual evidence is the ground truth. If the damage isn't clearly visible in the image, the claim is not fully supported, even if the user provides a detailed text description.
+- **Why deterministic validation exists**: Certain checks (like minimum required images or prompt injection detection) are straightforward boolean logic. Handling these deterministically before or alongside the VLM is faster, avoids hallucinations, and reduces prompt complexity.
+- **Why caching was added**: Caching avoids redundant API calls for duplicate claims and heavily retried identical images. This speeds up processing, reduces API costs/rate limits, and makes the evaluation pipeline faster.
+- **How confidence works**: An internal confidence score is calculated based on image quality, the number of supporting images, and the clarity of the VLM's decision. If confidence is below 0.5, a `manual_review_required` risk flag is automatically added, ensuring uncertain claims are escalated to human reviewers.
 
 ### Models used
 

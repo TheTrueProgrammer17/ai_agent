@@ -1,0 +1,4 @@
+Car Damage Guidance:
+- Check for dents, scratches, bumper damage, and windshield damage.
+- Ensure the damage matches the specific part claimed (e.g., front_bumper vs rear_bumper).
+- Reflections on glossy car surfaces can be mistaken for scratches; look for clear structural changes.

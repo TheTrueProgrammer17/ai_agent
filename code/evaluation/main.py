@@ -66,8 +66,28 @@ def run_single_claim(claim: dict, image_mode: str = "all") -> dict:
 
     try:
         images = load_all_images(image_paths_str, base_dir=DATASET_DIR)
-        extra_risk_flags = assess_risk(user_history)
+        extra_risk_flags = assess_risk(user_history, user_claim=claim_text)
         valid_images = [img for img in images if img["valid"]]
+
+        # Extract image quality flags
+        quality_flags = []
+        for img in valid_images:
+            quality_flags.extend(img.get("flags", []))
+        extra_risk_flags.extend(quality_flags)
+
+        # Check evidence requirements deterministically
+        evidence_met_pre_vlm = None
+        evidence_reason_pre_vlm = None
+        if evidence_requirements:
+            for req in evidence_requirements:
+                if "minimum_images" in req:
+                    try:
+                        min_imgs = int(req["minimum_images"])
+                        if len(valid_images) < min_imgs:
+                            evidence_met_pre_vlm = "false"
+                            evidence_reason_pre_vlm = f"Requires at least {min_imgs} images, only provided {len(valid_images)} valid image(s)."
+                    except ValueError:
+                        pass
 
         if image_mode == "first" and valid_images:
             valid_images = valid_images[:1]
@@ -79,6 +99,12 @@ def run_single_claim(claim: dict, image_mode: str = "all") -> dict:
             evidence_requirements=evidence_requirements,
             extra_risk_flags=extra_risk_flags,
         )
+
+        # Override if deterministic rule failed
+        if evidence_met_pre_vlm == "false":
+            vlm_result["evidence_standard_met"] = "false"
+            if "evidence_standard_met_reason" not in vlm_result or not vlm_result["evidence_standard_met_reason"]:
+                vlm_result["evidence_standard_met_reason"] = evidence_reason_pre_vlm
 
         # Merge risk flags
         existing = vlm_result.get("risk_flags", [])
@@ -269,6 +295,7 @@ def write_report(
     api_calls_total: int,
     cm: dict,
     error_counts: dict,
+    cache_hits: int,
 ):
     report_path = os.path.join(EVAL_DIR, "evaluation_report.md")
 
@@ -303,6 +330,21 @@ def write_report(
             lines.append(f"- wrong {k}: {v}")
         return "\n".join(lines)
 
+    def fmt_class_dist_and_acc(cm_dict: dict) -> str:
+        lines = [
+            "| Class | Ground Truth Count | Accuracy |",
+            "|-------|--------------------|----------|"
+        ]
+        for exp in ["supported", "contradicted", "not_enough_information"]:
+            total = sum(cm_dict[exp].values())
+            correct = cm_dict[exp][exp]
+            acc = (correct / total * 100) if total > 0 else 0
+            lines.append(f"| **{exp}** | {total} | {acc:.1f}% |")
+        return "\n".join(lines)
+
+    total_calls = api_calls_total + cache_hits
+    hit_rate = (cache_hits / total_calls * 100) if total_calls > 0 else 0.0
+
     report = f"""# Evaluation Report — Damage Claim Verification System
 
 Generated: {time.strftime("%Y-%m-%dT%H:%M:%S")}
@@ -314,6 +356,9 @@ Generated: {time.strftime("%Y-%m-%dT%H:%M:%S")}
 {fmt_table(chosen_metrics)}
 
 ### Error Analysis (Chosen Strategy)
+
+#### Class Distribution & Per-Label Accuracy
+{fmt_class_dist_and_acc(cm)}
 
 #### Confusion Matrix (claim_status)
 {fmt_cm(cm)}
@@ -344,6 +389,8 @@ which is the primary evaluation signal. Sending {"all images provides richer vis
 | Total claims evaluated | {total_claims} |
 | Total images processed | {total_images} |
 | Total API calls made | {api_calls_total} |
+| Cache hit rate | {hit_rate:.1f}% |
+| Model calls saved by cache | {cache_hits} |
 | Strategy A runtime | {elapsed_a:.1f}s |
 | Strategy B runtime | {elapsed_b:.1f}s |
 | Combined runtime | {elapsed_a + elapsed_b:.1f}s |
@@ -436,9 +483,10 @@ def main():
     # Print VLM stats
     print_stats()
 
-    # Get total API call count from vlm module
+    # Get total API call count and cache hits from vlm module
     import vlm as vlm_module
     api_calls_total = vlm_module._total_api_calls
+    cache_hits = getattr(vlm_module, "_total_cache_hits", 0)
 
     # Error analysis on chosen strategy
     chosen_preds = preds_b if chosen == "B" else preds_a
@@ -482,6 +530,7 @@ def main():
         api_calls_total=api_calls_total,
         cm=cm,
         error_counts=error_counts,
+        cache_hits=cache_hits,
     )
 
     console.print(

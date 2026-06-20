@@ -9,13 +9,15 @@ import re
 import time
 
 from groq import Groq
+from cache import get_cached_result, save_to_cache
 
 # Production-active LLaMA 3.2 Vision Instruct Models
 PRIMARY_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 FALLBACK_MODEL = "qwen/qwen3.6-27b"
 MAX_RETRIES = 3
 
-SYSTEM_PROMPT = """
+def _get_system_prompt(claim_object: str) -> str:
+    base_prompt = """
 You are a damage claim verification specialist.
 You analyze images to verify whether the submitted images
 support or contradict the user's damage claim.
@@ -44,6 +46,17 @@ IMPORTANT: If you can clearly see the claimed object part
 but the claimed damage does not exist there, use 
 contradicted — not not_enough_information.
 """
+    prompt_dir = os.path.join(os.path.dirname(__file__), "prompts")
+    specific_path = os.path.join(prompt_dir, f"{claim_object.lower()}_prompt.txt")
+    specific_prompt = ""
+    if os.path.exists(specific_path):
+        try:
+            with open(specific_path, "r", encoding="utf-8") as f:
+                specific_prompt = f"\n\nOBJECT-SPECIFIC GUIDANCE:\n{f.read()}"
+        except:
+            pass
+            
+    return base_prompt + specific_prompt
 
 FALLBACK_RESULT = {
     "evidence_standard_met": False,
@@ -61,6 +74,7 @@ FALLBACK_RESULT = {
 # Counters (module-level, safe for ThreadPoolExecutor with GIL)
 _total_api_calls = 0
 _total_claims_processed = 0
+_total_cache_hits = 0
 
 
 def _extract_wait_seconds(error_message: str) -> float:
@@ -183,7 +197,7 @@ def _extract_json(text: str) -> dict:
     return json.loads(json_str)
 
 
-def _call_model(client: Groq, model: str, user_message: str, images: list) -> dict:
+def _call_model(client: Groq, model: str, user_message: str, images: list, claim_object: str = "unknown") -> dict:
     """Make a single API call and return parsed JSON dict."""
     global _total_api_calls
 
@@ -204,7 +218,7 @@ def _call_model(client: Groq, model: str, user_message: str, images: list) -> di
     response = client.chat.completions.create(
         model=model,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": _get_system_prompt(claim_object)},
             {"role": "user", "content": content},
         ],
         temperature=0.1,
@@ -216,6 +230,42 @@ def _call_model(client: Groq, model: str, user_message: str, images: list) -> di
         raise ValueError("Empty content token block response from model endpoint")
 
     return _extract_json(raw)
+
+
+def _add_confidence_score(result: dict) -> dict:
+    cs = result.get("claim_status", "")
+    rf = result.get("risk_flags", [])
+    
+    if isinstance(rf, str):
+        rf_list = [f.strip() for f in rf.split(";") if f.strip() and f.strip() != "none"]
+    else:
+        rf_list = list(rf) if isinstance(rf, list) else []
+        
+    supp_imgs = result.get("supporting_image_ids", [])
+    if isinstance(supp_imgs, str):
+        num_supp = len([i for i in supp_imgs.split(";") if i.strip() and i.strip() != "none"])
+    else:
+        num_supp = len(supp_imgs) if isinstance(supp_imgs, list) else 0
+        
+    low_flags = {"blurry_image", "low_light_or_glare", "damage_not_visible"}
+    
+    if cs == "not_enough_information" or any(f in low_flags for f in rf_list):
+        confidence = 0.3
+    elif cs in ["supported", "contradicted"] and num_supp >= 2:
+        confidence = 0.95
+    elif cs in ["supported", "contradicted"]:
+        confidence = 0.8
+    else:
+        confidence = 0.6
+        
+    result["confidence_score"] = confidence
+    
+    if confidence < 0.5:
+        if "manual_review_required" not in rf_list:
+            rf_list.append("manual_review_required")
+            result["risk_flags"] = rf_list
+            
+    return result
 
 
 def analyze_claim(
@@ -235,7 +285,14 @@ def analyze_claim(
     - After MAX_RETRIES on primary: try FALLBACK_MODEL once
     - If all fail: return FALLBACK_RESULT with manual_review_required flag
     """
-    global _total_claims_processed
+    global _total_claims_processed, _total_cache_hits
+
+    # Check cache first
+    cached = get_cached_result(claim_object, claim_text, images)
+    if cached:
+        _total_cache_hits += 1
+        _total_claims_processed += 1
+        return cached
 
     api_key = os.environ.get("GROQ_API_KEY", "")
     if not api_key:
@@ -254,7 +311,9 @@ def analyze_claim(
     # Loop iterations on primary model instance
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            result = _call_model(client, PRIMARY_MODEL, user_message, images)
+            result = _call_model(client, PRIMARY_MODEL, user_message, images, claim_object)
+            result = _add_confidence_score(result)
+            save_to_cache(claim_object, claim_text, images, result)
             _total_claims_processed += 1
             return result
         except Exception as e:
@@ -271,7 +330,9 @@ def analyze_claim(
         print(f"[vlm] Trying fallback model: {FALLBACK_MODEL}")
         # Extra delay before fallback attempt
         time.sleep(1.5)
-        result = _call_model(client, FALLBACK_MODEL, user_message, images)
+        result = _call_model(client, FALLBACK_MODEL, user_message, images, claim_object)
+        result = _add_confidence_score(result)
+        save_to_cache(claim_object, claim_text, images, result)
         _total_claims_processed += 1
         return result
     except Exception as e:
@@ -289,3 +350,4 @@ def print_stats():
     """Print total API calls and claims processed."""
     print(f"\n[vlm] Total API calls made: {_total_api_calls}")
     print(f"[vlm] Total claims processed: {_total_claims_processed}")
+    print(f"[vlm] Cache hits: {_total_cache_hits}")
